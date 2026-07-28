@@ -7,8 +7,11 @@ See the LICENSE.md file in the root directory for more details.
 import pyray as rl
 from dataclasses import dataclass
 
+from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.sunnypilot.model_info import default_model_name
+from openpilot.sunnypilot.models.helpers import get_selected_bundle
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 
@@ -25,14 +28,16 @@ class UiElement:
   label_width: float = 0.0
   unit_width: float = 0.0
   total_width: float = 0.0
+  value_parts: list[tuple[str, rl.Color]] | None = None
 
   def measure(self, font, font_size: int):
-    self.label_text = f"{self.label} "
+    self.label_text = f"{self.label} " if self.label else ""
     self.val_text = self.value
     self.unit_text = f" {self.unit}" if self.unit else ""
 
     self.label_width = measure_text_cached(font, self.label_text, font_size, 0).x
-    self.val_width = measure_text_cached(font, self.val_text, font_size, 0).x
+    self.val_width = (sum(measure_text_cached(font, text, font_size, 0).x for text, _ in self.value_parts)
+                      if self.value_parts is not None else measure_text_cached(font, self.val_text, font_size, 0).x)
     self.unit_width = measure_text_cached(font, self.unit_text, font_size, 0).x if self.unit else 0
 
     self.total_width = self.label_width + self.val_width + self.unit_width
@@ -278,6 +283,116 @@ class SteeringTorqueEpsElement:
     steering_torque_eps = sm['carState'].steeringTorqueEps
     value = f"{abs(steering_torque_eps):.1f}"
     return UiElement(value, "E.T.", self.unit, rl.WHITE)
+
+
+class StorageElement:
+  def __init__(self):
+    self.unit = "%"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['deviceState']:
+      return UiElement("-", "剩余存储", self.unit, rl.WHITE)
+
+    free_percent = float(sm['deviceState'].freeSpacePercent)
+    value = f"{int(round(free_percent))}"
+
+    if free_percent <= 2.0:
+      color = rl.RED
+    elif free_percent < 10.0:
+      color = rl.Color(255, 188, 0, 200)
+    else:
+      color = rl.Color(0, 255, 0, 200)
+
+    return UiElement(value, "剩余存储", self.unit, color)
+
+
+class MemoryUsageElement:
+  def __init__(self):
+    self.unit = "%"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['deviceState']:
+      return UiElement("-", "MEM", self.unit, rl.WHITE)
+
+    mem_percent = int(round(sm['deviceState'].memoryUsagePercent))
+    value = f"{mem_percent}"
+
+    if mem_percent >= 95:
+      color = rl.RED
+    elif mem_percent >= 85:
+      color = rl.Color(255, 188, 0, 200)
+    else:
+      color = rl.Color(0, 255, 0, 200)
+
+    return UiElement(value, "MEM", self.unit, color)
+
+
+class CpuTempMaxElement:
+  def __init__(self):
+    self.unit = "°C"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['deviceState']:
+      return UiElement("-", "CPU", self.unit, rl.WHITE)
+
+    cpu_temps = sm['deviceState'].cpuTempC
+    max_cpu_temp = max(cpu_temps) if cpu_temps else 0.0
+    value = f"{max_cpu_temp:.0f}"
+
+    if max_cpu_temp >= 95:
+      color = rl.RED
+    elif max_cpu_temp >= 85:
+      color = rl.Color(255, 188, 0, 200)
+    elif max_cpu_temp >= 75:
+      color = rl.Color(255, 230, 0, 200)
+    else:
+      color = rl.Color(0, 255, 0, 200)
+
+    return UiElement(value, "CPU", self.unit, color)
+
+
+class EgpuElement:
+  """Big/small driving model name (abbrev.) + chestnut eGPU telemetry."""
+
+  @staticmethod
+  def _model_name(source: str) -> str:
+    bundle = get_selected_bundle(ui_state.params, source)
+    return bundle.internalName if bundle else default_model_name(source)
+
+  def update(self, sm, chestnut_state) -> UiElement:
+    state = getattr(chestnut_state, "value", chestnut_state)
+    status_labels = {
+      "uncompiled": ("UNCOMP", rl.RED),
+      "ready": ("RDY", rl.Color(255, 188, 0, 200)),
+      "loading": ("LOAD", rl.Color(255, 188, 0, 200)),
+      "active": ("RUN", rl.Color(0, 255, 0, 200)),
+      "failed": ("FAIL", rl.RED),
+    }
+    source = "qcom" if state == "disconnected" else "chestnut"
+    model_name = self._model_name(source)
+    name_color = rl.Color(0, 255, 0, 200) if state == "disconnected" else status_labels.get(state, ("?", rl.WHITE))[1]
+
+    personality_color = {
+      log.LongitudinalPersonality.aggressive: rl.Color(206, 120, 236, 255),
+      log.LongitudinalPersonality.relaxed: rl.Color(0, 255, 0, 200),
+    }.get(ui_state.personality, rl.WHITE)
+
+    value_parts = [("● ", personality_color), (model_name, name_color)]
+    if state not in ("disconnected", "active"):
+      status_text, status_color = status_labels.get(state, ("?", rl.WHITE))
+      value_parts.extend([(" ", rl.WHITE), (status_text, status_color)])
+      if state in ("uncompiled", "failed"):
+        value_parts.extend([(" | ", rl.WHITE), (self._model_name("qcom"), rl.Color(0, 255, 0, 200))])
+    if state == "active" and sm.valid["chestnutGpuState"]:
+      telemetry = sm["chestnutGpuState"]
+      value_parts.extend([
+        (f" {telemetry.tempC:.0f}", rl.Color(0, 255, 0, 200)), ("°C ", rl.WHITE),
+        (f"{telemetry.gpuUsagePercent}", rl.Color(0, 255, 0, 200)), ("% ", rl.WHITE),
+        (f"{telemetry.powerDrawW:.0f}", rl.Color(0, 255, 0, 200)), ("W ", rl.WHITE),
+        (f"{telemetry.fanSpeedRpm}", rl.Color(0, 255, 0, 200)), ("rpm", rl.WHITE),
+      ])
+    value = "".join(text for text, _ in value_parts)
+    return UiElement(value, "", "", name_color, value_parts=value_parts)
 
 
 class GpsInfoElement:

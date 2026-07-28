@@ -12,7 +12,8 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui.elements import (
   UiElement, RelDistElement, RelSpeedElement, SteeringAngleElement,
   DesiredLateralAccelElement, ActualLateralAccelElement, DesiredSteeringAngleElement,
   AEgoElement, LeadSpeedElement, FrictionCoefficientElement, LatAccelFactorElement,
-  SteeringTorqueEpsElement, BearingDegElement, AltitudeElement, DesiredSteeringPIDElement
+  SteeringTorqueEpsElement, BearingDegElement, AltitudeElement, DesiredSteeringPIDElement,
+  StorageElement, MemoryUsageElement, CpuTempMaxElement, EgpuElement
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -39,6 +40,7 @@ class DeveloperUiRenderer(Widget):
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self.dev_ui_mode = DeveloperUiState.OFF
 
+    self.egpu_elem = EgpuElement()
     self.rel_dist_elem = RelDistElement()
     self.rel_speed_elem = RelSpeedElement()
     self.steering_angle_elem = SteeringAngleElement()
@@ -49,7 +51,10 @@ class DeveloperUiRenderer(Widget):
     self.a_ego_elem = AEgoElement()
     self.lead_speed_elem = LeadSpeedElement()
     self.friction_elem = FrictionCoefficientElement()
+    self.storage_elem = StorageElement()
+    self.memory_elem = MemoryUsageElement()
     self.lat_accel_factor_elem = LatAccelFactorElement()
+    self.cpu_temp_max_elem = CpuTempMaxElement()
     self.steering_torque_elem = SteeringTorqueEpsElement()
     self.bearing_elem = BearingDegElement()
     self.altitude_elem = AltitudeElement()
@@ -135,28 +140,15 @@ class DeveloperUiRenderer(Widget):
                       rl.Color(0, 0, 0, 100))
 
     elements = [
-      self.a_ego_elem.update(sm, ui_state.is_metric),
-      self.lead_speed_elem.update(sm, ui_state.is_metric),
+      # driving model (abbrev.) + chestnut eGPU temp / fan / gpu / power
+      self.egpu_elem.update(sm, ui_state.chestnut_state),
+      self.memory_elem.update(sm, ui_state.is_metric),
+      self.cpu_temp_max_elem.update(sm, ui_state.is_metric),
     ]
 
-    # Add torque-specific elements if using torque control
-    if sm['controlsState'].lateralControlState.which() == 'torqueState':
-      override_active = ui_state.enforce_torque_control and ui_state.custom_torque_params and ui_state.torque_override_enabled
-      if sm.valid['lateralTorqueParameters'] or override_active:
-        elements.extend([
-          self.friction_elem.update(sm, ui_state.is_metric),
-          self.lat_accel_factor_elem.update(sm, ui_state.is_metric),
-        ])
-    else:
-      # Non-torque: show steering torque and GPS data
-      elements.append(self.steering_torque_elem.update(sm, ui_state.is_metric))
-
-      if sm.valid['gpsLocationExternal'] or sm.valid['gpsLocation']:
-        elements.append(self.bearing_elem.update(sm, ui_state.is_metric))
-
-    # Add altitude if GPS available
-    if sm.valid['gpsLocationExternal'] or sm.valid['gpsLocation']:
-      elements.append(self.altitude_elem.update(sm, ui_state.is_metric))
+    # The old driver-facing dev values (a_ego, lead speed, friction, steering
+    # torque, bearing, altitude) are replaced by the system status bar above.
+    # Re-enable them by appending here if needed.
 
     if not elements:
       return
@@ -185,7 +177,13 @@ class DeveloperUiRenderer(Widget):
     start_x = center_x - element.total_width / 2
 
     rl.draw_text_ex(self._font_bold, element.label_text, rl.Vector2(start_x, y - font_size // 2), font_size, 0, rl.WHITE)
-    rl.draw_text_ex(self._font_bold, element.val_text, rl.Vector2(start_x + element.label_width, y - font_size // 2), font_size, 0, element.color)
+    value_x = start_x + element.label_width
+    if element.value_parts is None:
+      rl.draw_text_ex(self._font_bold, element.val_text, rl.Vector2(value_x, y - font_size // 2), font_size, 0, element.color)
+    else:
+      for text, color in element.value_parts:
+        rl.draw_text_ex(self._font_bold, text, rl.Vector2(value_x, y - font_size // 2), font_size, 0, color)
+        value_x += measure_text_cached(self._font_bold, text, font_size, 0).x
 
     if element.unit:
       rl.draw_text_ex(self._font_bold, element.unit_text, rl.Vector2(start_x + element.label_width + element.val_width, y - font_size // 2),
