@@ -89,6 +89,17 @@ class ModelState(ModelStateBase):
   inputs: dict[str, np.ndarray]
   prev_desire: np.ndarray
 
+  def report_load_progress(self, percent: int) -> None:
+    if not self.chestnut:
+      return
+    percent = max(0, min(100, int(percent)))
+    if percent == getattr(self, "_last_load_progress", None):
+      return
+    self._last_load_progress = percent
+    if getattr(self, "_progress_params", None) is None:
+      self._progress_params = Params()
+    self._progress_params.put("ChestnutLoadProgress", percent)
+
   def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False):
     ModelStateBase.__init__(self)
 
@@ -112,7 +123,9 @@ class ModelState(ModelStateBase):
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
-    jits = load_model(pkl_path, extend=fused_with_warp(cam_w, cam_h, self.chestnut))
+    jits = load_model(pkl_path, extend=fused_with_warp(cam_w, cam_h, self.chestnut),
+                      progress=self.report_load_progress if self.chestnut else None)
+    self.report_load_progress(86)
 
     metadata = jits['metadata']
     self.WARP_DEV = metadata.get('warp_dev', 'QCOM') if COMMA_HARDWARE else 'CPU'
@@ -271,6 +284,8 @@ def main(demo=False):
 
   params = Params()
   params.put_bool("ChestnutLoading", CHESTNUT)
+  if CHESTNUT:
+    params.put("ChestnutLoadProgress", 1)
   params.remove("ChestnutActive")
 
   gc.disable()
@@ -308,11 +323,15 @@ def main(demo=False):
       nonlocal big_model
       try:
         wait_for_chestnut()
+        params.put("ChestnutLoadProgress", 3)
         m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
+        params.put("ChestnutLoadProgress", 90)
         m.warmup()
+        params.put("ChestnutLoadProgress", 99)
         big_model = m
       except Exception:
         cloudlog.exception("chestnut load failed")
+        params.put("ChestnutLoadProgress", 0)
     loader = threading.Thread(target=load_big, daemon=True)
     loader.start()
     loader.join(BIG_MODEL_TIMEOUT)
@@ -329,6 +348,8 @@ def main(demo=False):
   if model is None:
     model = small_model
   params.put_bool("ChestnutLoading", False)
+  if CHESTNUT and model is not None:
+    params.put("ChestnutLoadProgress", 100)
   assert model is not None
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
