@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import pyray as rl
+import time
 from dataclasses import dataclass
 
 from openpilot.cereal import log
@@ -393,6 +394,111 @@ class EgpuElement:
       ])
     value = "".join(text for text, _ in value_parts)
     return UiElement(value, "", "", name_color, value_parts=value_parts)
+
+
+class MemStorageElement:
+  """`MEM 62% 存储 82%` - RAM usage and free disk in one group."""
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['deviceState']:
+      return UiElement("-", "", "", rl.WHITE)
+
+    d = sm['deviceState']
+    mem_percent = int(round(d.memoryUsagePercent))
+    free_percent = int(round(float(d.freeSpacePercent)))
+
+    if mem_percent >= 95:
+      mem_color = rl.RED
+    elif mem_percent >= 85:
+      mem_color = rl.Color(255, 188, 0, 200)
+    else:
+      mem_color = rl.Color(0, 255, 0, 200)
+
+    if free_percent <= 2:
+      free_color = rl.RED
+    elif free_percent < 10:
+      free_color = rl.Color(255, 188, 0, 200)
+    else:
+      free_color = rl.Color(0, 255, 0, 200)
+
+    parts = [
+      ("MEM ", rl.WHITE), (f"{mem_percent}", mem_color), ("%  ", rl.WHITE),
+      ("存储 ", rl.WHITE), (f"{free_percent}", free_color), ("%", rl.WHITE),
+    ]
+    return UiElement("".join(text for text, _ in parts), "", "", rl.WHITE, value_parts=parts)
+
+
+class CpuSocElement:
+  """`CPU 63°C SoC 45%` - hottest CPU core and overall SoC (all-core) load."""
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['deviceState']:
+      return UiElement("-", "", "", rl.WHITE)
+
+    d = sm['deviceState']
+    cpu_temps = d.cpuTempC
+    max_cpu_temp = max(cpu_temps) if cpu_temps else 0.0
+    usage = list(d.cpuUsagePercent)
+    soc_usage = sum(usage) / len(usage) if usage else 0.0
+
+    if max_cpu_temp >= 95:
+      temp_color = rl.RED
+    elif max_cpu_temp >= 85:
+      temp_color = rl.Color(255, 188, 0, 200)
+    elif max_cpu_temp >= 75:
+      temp_color = rl.Color(255, 230, 0, 200)
+    else:
+      temp_color = rl.Color(0, 255, 0, 200)
+
+    if soc_usage >= 90:
+      soc_color = rl.RED
+    elif soc_usage >= 70:
+      soc_color = rl.Color(255, 188, 0, 200)
+    else:
+      soc_color = rl.Color(0, 255, 0, 200)
+
+    parts = [
+      ("CPU ", rl.WHITE), (f"{max_cpu_temp:.0f}", temp_color), ("°C  ", rl.WHITE),
+      ("SoC ", rl.WHITE), (f"{soc_usage:.0f}", soc_color), ("%", rl.WHITE),
+    ]
+    return UiElement("".join(text for text, _ in parts), "", "", rl.WHITE, value_parts=parts)
+
+
+class ModelStatsElement:
+  """`BIG 20Hz 8.2ms` - big/small model, measured model rate and inference time."""
+
+  WINDOW_S = 3.0
+
+  def __init__(self):
+    self._samples: list[tuple[float, int]] = []
+    self._hz: float | None = None
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid['modelV2']:
+      return UiElement("BIG - -", "", "", rl.WHITE)
+
+    m = sm['modelV2']
+    now = time.monotonic()
+
+    if not self._samples or self._samples[-1][1] != m.frameId:
+      self._samples.append((now, m.frameId))
+      self._samples = [(t, f) for (t, f) in self._samples if now - t <= self.WINDOW_S]
+      if len(self._samples) >= 2:
+        t0, f0 = self._samples[0]
+        dt = now - t0
+        if dt > 0 and m.frameId >= f0:
+          self._hz = (m.frameId - f0) / dt
+
+    big = bool(m.big)
+    big_color = rl.Color(0, 255, 0, 200) if big else rl.Color(166, 166, 166, 255)
+    hz_text = f"{self._hz:.0f}" if self._hz is not None else "-"
+    exec_ms = m.modelExecutionTime
+
+    parts = [
+      ("BIG " if big else "SMALL ", big_color), (hz_text, rl.Color(0, 255, 0, 200)), ("Hz ", rl.WHITE),
+      (f"{exec_ms:.1f}", rl.Color(0, 255, 0, 200)), ("ms", rl.WHITE),
+    ]
+    return UiElement("".join(text for text, _ in parts), "", "", rl.WHITE, value_parts=parts)
 
 
 class GpsInfoElement:

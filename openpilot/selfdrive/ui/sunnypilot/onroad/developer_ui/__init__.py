@@ -13,7 +13,8 @@ from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui.elements import (
   DesiredLateralAccelElement, ActualLateralAccelElement, DesiredSteeringAngleElement,
   AEgoElement, LeadSpeedElement, FrictionCoefficientElement, LatAccelFactorElement,
   SteeringTorqueEpsElement, BearingDegElement, AltitudeElement, DesiredSteeringPIDElement,
-  StorageElement, MemoryUsageElement, CpuTempMaxElement, EgpuElement
+  StorageElement, MemoryUsageElement, CpuTempMaxElement, EgpuElement,
+  MemStorageElement, CpuSocElement, ModelStatsElement
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -41,6 +42,9 @@ class DeveloperUiRenderer(Widget):
     self.dev_ui_mode = DeveloperUiState.OFF
 
     self.egpu_elem = EgpuElement()
+    self.mem_storage_elem = MemStorageElement()
+    self.cpu_soc_elem = CpuSocElement()
+    self.model_stats_elem = ModelStatsElement()
     self.rel_dist_elem = RelDistElement()
     self.rel_speed_elem = RelSpeedElement()
     self.steering_angle_elem = SteeringAngleElement()
@@ -140,10 +144,11 @@ class DeveloperUiRenderer(Widget):
                       rl.Color(0, 0, 0, 100))
 
     elements = [
-      # driving model (abbrev.) + chestnut eGPU temp / fan / gpu / power
+      # 4 groups, one line: model+eGPU telemetry | RAM+disk | CPU temp+SoC load | model rate+latency
       self.egpu_elem.update(sm, ui_state.chestnut_state),
-      self.memory_elem.update(sm, ui_state.is_metric),
-      self.cpu_temp_max_elem.update(sm, ui_state.is_metric),
+      self.mem_storage_elem.update(sm, ui_state.is_metric),
+      self.cpu_soc_elem.update(sm, ui_state.is_metric),
+      self.model_stats_elem.update(sm, ui_state.is_metric),
     ]
 
     # The old driver-facing dev values (a_ego, lead speed, friction, steering
@@ -153,27 +158,33 @@ class DeveloperUiRenderer(Widget):
     if not elements:
       return
 
-    font_size = 38
+    # shrink the font if all groups together would not fit the bar
+    margin = 40
+    inner_width = rect.width - 2 * margin
+    font_size = 34
     element_widths = []
-    for element in elements:
-      element.measure(self._font_bold, font_size)
-      element_widths.append(element.total_width)
+    while True:
+      element_widths = []
+      for element in elements:
+        element.measure(self._font_bold, font_size)
+        element_widths.append(element.total_width)
+      if sum(element_widths) <= inner_width or font_size <= 24:
+        break
+      font_size -= 2
 
     total_element_width = sum(element_widths)
     num_gaps = len(elements) + 1
-    available_width = rect.width
-    gap_width = (available_width - total_element_width) / num_gaps
+    gap_width = max(0.0, (inner_width - total_element_width) / num_gaps)
 
     center_y = y + bar_height // 2
-    current_x = rect.x + gap_width
+    current_x = rect.x + margin + gap_width
 
     for i, element in enumerate(elements):
       element_center_x = int(current_x + element_widths[i] / 2)
-      self._draw_bottom_dev_ui_element(element_center_x, center_y, element)
+      self._draw_bottom_dev_ui_element(element_center_x, center_y, element, font_size)
       current_x += element_widths[i] + gap_width
 
-  def _draw_bottom_dev_ui_element(self, center_x: int, y: int, element: UiElement) -> None:
-    font_size = 38
+  def _draw_bottom_dev_ui_element(self, center_x: int, y: int, element: UiElement, font_size: int) -> None:
     start_x = center_x - element.total_width / 2
 
     rl.draw_text_ex(self._font_bold, element.label_text, rl.Vector2(start_x, y - font_size // 2), font_size, 0, rl.WHITE)
