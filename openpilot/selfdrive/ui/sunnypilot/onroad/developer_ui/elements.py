@@ -355,22 +355,6 @@ class CpuTempMaxElement:
 class EgpuElement:
   """Big/small driving model name (abbrev.) + chestnut eGPU telemetry."""
 
-  def __init__(self):
-    self._progress_at = 0.0
-    self._progress_value: int | None = None
-
-  def _load_percent(self) -> int | None:
-    # the bar redraws at 60 fps; reading the param file every frame would be wasteful
-    now = time.monotonic()
-    if now - self._progress_at >= 0.5:
-      self._progress_at = now
-      try:
-        raw = ui_state.params.get("ChestnutLoadProgress")
-        self._progress_value = int(raw) if raw is not None else None
-      except Exception:
-        self._progress_value = None
-    return self._progress_value
-
   @staticmethod
   def _model_name(source: str) -> str:
     bundle = get_selected_bundle(ui_state.params, source)
@@ -398,10 +382,6 @@ class EgpuElement:
     if state not in ("disconnected", "active"):
       status_text, status_color = status_labels.get(state, ("?", rl.WHITE))
       value_parts.extend([(" ", rl.WHITE), (status_text, status_color)])
-      if state == "loading":
-        percent = self._load_percent()
-        if percent is not None and 0 < percent < 100:
-          value_parts.extend([(" ", rl.WHITE), (f"{percent}", rl.Color(255, 188, 0, 200)), ("%", rl.WHITE)])
       if state in ("uncompiled", "failed"):
         value_parts.extend([(" | ", rl.WHITE), (self._model_name("qcom"), rl.Color(0, 255, 0, 200))])
     if state == "active" and sm.valid["chestnutGpuState"]:

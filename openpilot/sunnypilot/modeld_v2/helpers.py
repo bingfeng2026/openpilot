@@ -117,26 +117,14 @@ def _extended(path: str, extend) -> tuple[dict, dict, str]:
   return parts | added, extras, _parts_digest(added) if added else ""
 
 
-def load_model(path: str, device_map: dict | None = None, verify: bool = True, cache: bool = True, extend=None,
-               progress=None) -> dict:
+def load_model(path: str, device_map: dict | None = None, verify: bool = True, cache: bool = True, extend=None) -> dict:
   parts, extras, extra = _extended(path, extend)
-  if progress is not None:
-    progress(10)
   if cache and (cached := _read_cache(path, parts, device_map, extra)) is not None:
-    if progress is not None:
-      progress(80)
     return extras | cached
   shared: dict = {}
-  items = list(parts.items())
-  jits = {}
-  for i, (key, (header, blob)) in enumerate(items):
-    jits[key] = PlainJit(header, blob, device_map, verify, shared)
-    if progress is not None:
-      progress(10 + int(70 * (i + 1) / max(1, len(items))))
+  jits = {key: PlainJit(header, blob, device_map, verify, shared) for key, (header, blob) in parts.items()}
   if cache:
     _write_cache(path, jits, device_map, extra)
-  if progress is not None:
-    progress(85)
   return extras | jits
 
 
