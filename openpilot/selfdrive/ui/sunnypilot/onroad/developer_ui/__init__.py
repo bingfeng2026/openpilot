@@ -23,7 +23,7 @@ from openpilot.system.ui.widgets import Widget
 
 def get_bottom_dev_ui_offset():
   if ui_state.developer_ui in (DeveloperUiState.BOTTOM, DeveloperUiState.BOTH):
-    return 60
+    return 90
   return 0
 
 
@@ -137,52 +137,46 @@ class DeveloperUiRenderer(Widget):
 
   def _draw_bottom_dev_ui(self, rect: rl.Rectangle) -> None:
     sm = ui_state.sm
-    bar_height = 61
-    y = int(rect.y + rect.height - bar_height)
-
-    rl.draw_rectangle(int(rect.x), y, int(rect.width), bar_height,
-                      rl.Color(0, 0, 0, 100))
 
     elements = [
-      # 4 groups, one line: model+eGPU telemetry | RAM+disk | CPU temp+SoC load | model rate+latency
+      # 4 groups: model+eGPU telemetry | RAM+disk | CPU temp+SoC load | model rate+latency
       self.egpu_elem.update(sm, ui_state.chestnut_state),
       self.mem_storage_elem.update(sm, ui_state.is_metric),
       self.cpu_soc_elem.update(sm, ui_state.is_metric),
       self.model_stats_elem.update(sm, ui_state.is_metric),
     ]
 
-    # The old driver-facing dev values (a_ego, lead speed, friction, steering
-    # torque, bearing, altitude) are replaced by the system status bar above.
-    # Re-enable them by appending here if needed.
-
     if not elements:
       return
 
-    # shrink the font if all groups together would not fit the bar
-    margin = 40
-    inner_width = rect.width - 2 * margin
-    font_size = 34
-    element_widths = []
-    while True:
-      element_widths = []
+    # single row, largest font that still fits all groups
+    margin = 12
+    min_gap = 8
+    n = len(elements)
+    available = rect.width - 2 * margin - (n + 1) * min_gap
+    font_size = 96
+    widths = []
+    while font_size > 16:
+      widths = []
       for element in elements:
         element.measure(self._font_bold, font_size)
-        element_widths.append(element.total_width)
-      if sum(element_widths) <= inner_width or font_size <= 24:
+        widths.append(element.total_width)
+      if sum(widths) <= available:
         break
-      font_size -= 2
+      font_size -= 1
 
-    total_element_width = sum(element_widths)
-    num_gaps = len(elements) + 1
-    gap_width = max(0.0, (inner_width - total_element_width) / num_gaps)
+    bar_height = int(font_size * 1.55)
+    y = int(rect.y + rect.height - bar_height)
+    rl.draw_rectangle(int(rect.x), y, int(rect.width), bar_height, rl.Color(0, 0, 0, 150))
 
-    center_y = y + bar_height // 2
+    total = sum(widths)
+    gap_width = max(min_gap, (rect.width - 2 * margin - total) / (n + 1))
+    center_y = y + bar_height / 2
     current_x = rect.x + margin + gap_width
-
     for i, element in enumerate(elements):
-      element_center_x = int(current_x + element_widths[i] / 2)
+      element_center_x = int(current_x + widths[i] / 2)
       self._draw_bottom_dev_ui_element(element_center_x, center_y, element, font_size)
-      current_x += element_widths[i] + gap_width
+      current_x += widths[i] + gap_width
 
   def _draw_bottom_dev_ui_element(self, center_x: int, y: int, element: UiElement, font_size: int) -> None:
     start_x = center_x - element.total_width / 2
