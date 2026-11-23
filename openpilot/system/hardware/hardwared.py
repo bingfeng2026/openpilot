@@ -257,6 +257,18 @@ def hardware_thread(end_event, hw_queue) -> None:
   chestnut_status = ChestnutStatus()
   branch = get_short_branch()
 
+  # if an unsupported device and branch is detected, going onroad is blocked
+  # only allow going onroad when:
+  # - TIZI, or
+  # - TICI on an upstream tici channel or this fork's dev-sp branch
+  build_metadata = get_build_metadata()
+  is_unsupported_combo = (COMMA_HARDWARE and HARDWARE.get_device_type() == "tici" and
+                          build_metadata.channel_type != "tici" and build_metadata.channel != "dev-sp")
+  startup_conditions["not_tici"] = not is_unsupported_combo
+  onroad_conditions["not_tici"] = not is_unsupported_combo
+  set_offroad_alert_if_changed("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
+  runner_voltage_ok = None
+
   while not end_event.is_set():
     sm.update(PANDA_STATES_TIMEOUT)
 
@@ -379,17 +391,6 @@ def hardware_thread(end_event, hw_queue) -> None:
     startup_conditions["not_always_offroad"] = not offroad_mode
     onroad_conditions["not_always_offroad"] = not offroad_mode
 
-    # if an unsupported device and branch is detected, going onroad is blocked
-    # only allow going onroad when:
-    # - TIZI, or
-    # - TICI on an upstream tici channel or this fork's dev-sp branch
-    build_metadata = get_build_metadata()
-    is_unsupported_combo = (COMMA_HARDWARE and HARDWARE.get_device_type() == "tici" and
-                            build_metadata.channel_type != "tici" and build_metadata.channel != "dev-sp")
-    startup_conditions["not_tici"] = not is_unsupported_combo
-    onroad_conditions["not_tici"] = not is_unsupported_combo
-    set_offroad_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
-
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
     extra_text = f"{offroad_comp_temp:.1f}C"
@@ -456,7 +457,10 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # GitHub runner auto off: 9V is used as the threshold because most desktop runners
     # will rarely exceed 5V so 9V is set as our buffer between desk use and car use.
-    params.put_bool("GithubRunnerSufficientVoltage", ((voltage or 0) and voltage > 9000))
+    sufficient_voltage = (voltage or 0) > 9000
+    if sufficient_voltage != runner_voltage_ok:
+      params.put_bool("GithubRunnerSufficientVoltage", sufficient_voltage)
+      runner_voltage_ok = sufficient_voltage
 
     power_monitor.calculate(voltage, onroad_conditions["ignition"])
     msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
