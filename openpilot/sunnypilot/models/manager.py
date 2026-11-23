@@ -6,7 +6,9 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import asyncio
+import json
 import os
+from pathlib import Path
 import re
 import threading
 import time
@@ -16,6 +18,7 @@ import requests
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.common.utils import atomic_write
 from openpilot.common.hardware.hw import Paths
 
 from openpilot.cereal import messaging, custom
@@ -30,6 +33,8 @@ MAX_CONCURRENT_PIECES = 12
 PIECE_SIZE = 8 * 1024 * 1024
 PIECE_ATTEMPTS = 3
 PIECE_BACKOFF = 1.0  # seconds, growing linearly: waits 1 s then 2 s between a piece's three attempts
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_BACKOFF = 2.0
 TRANSIENT_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 REPORT_INTERVAL = 0.5  # seconds between progress publications
 # byte ranges count encoded bytes but iter_content yields decoded ones, so ask for an unencoded body
@@ -49,13 +54,29 @@ def _is_transient(e: BaseException) -> bool:
 
 
 class _Progress:
-  def __init__(self):
-    self._bytes = 0
+  def __init__(self, path: str, layout: dict, done: set[int], done_bytes: int):
+    self._path = path
+    self._layout = layout
+    self._done = done.copy()
+    self._bytes = done_bytes
     self._lock = threading.Lock()
 
   def add_bytes(self, n: int) -> None:
     with self._lock:
       self._bytes += n
+
+  def mark_done(self, index: int) -> None:
+    with self._lock:
+      self._done.add(index)
+      with atomic_write(f"{self._path}.json", overwrite=True) as state:
+        json.dump({**self._layout, "done": sorted(self._done)}, state)
+        state.flush()
+        os.fsync(state.fileno())
+      fd = os.open(os.path.dirname(self._path) or ".", os.O_RDONLY)
+      try:
+        os.fsync(fd)
+      finally:
+        os.close(fd)
 
   def snapshot(self) -> int:
     with self._lock:
@@ -66,9 +87,22 @@ def _piece_ranges(total: int, piece_size: int) -> list[tuple[int, int]]:
   return [(start, min(start + piece_size, total)) for start in range(0, total, piece_size)]
 
 
-def _prepare_target(path: str, total: int) -> None:
+def _prepare_target(path: str, layout: dict, piece_count: int) -> set[int]:
+  total = layout["total"]
+  state_path = Path(f"{path}.json")
+  if layout["ranged"]:
+    try:
+      state = json.loads(state_path.read_text())
+      if isinstance(state, dict) and all(state.get(key) == value for key, value in layout.items()) and os.path.getsize(path) == total:
+        done = state.get("done")
+        if isinstance(done, list) and all(type(index) is int and 0 <= index < piece_count for index in done):
+          return set(done)
+    except (OSError, ValueError):
+      pass  # Missing or invalid resume data requires a fresh transfer.
+  state_path.unlink(missing_ok=True)
   with open(path, "wb") as f:
     f.truncate(total)
+  return set()
 
 
 def _content_range_total(response: requests.Response) -> int | None:
@@ -108,8 +142,13 @@ def _fetch_piece(url: str, path: str, index: int, start: int, end: int | None, p
             progress.add_bytes(len(block))
           if end is None:
             f.truncate()  # unknown length: the body defines the file size
-          if end is not None and written != end - start:
-            raise requests.exceptions.ConnectionError(f"short read: {written} of {end - start} bytes")
+          else:
+            if written != end - start:
+              raise requests.exceptions.ConnectionError(f"short read: {written} of {end - start} bytes")
+            # Persist the piece before the resume state can refer to it.
+            f.flush()
+            os.fsync(f.fileno())
+            progress.mark_done(index)
       return
     except requests.RequestException as e:
       progress.add_bytes(-written)  # the piece restarts from scratch
@@ -157,6 +196,8 @@ class ModelManagerSP:
         artifact.downloadProgress.progress = source_artifact.downloadProgress.progress
         artifact.downloadProgress.eta = source_artifact.downloadProgress.eta
         artifact.downloadProgress.speed = source_artifact.downloadProgress.speed
+        artifact.downloadProgress.resuming = source_artifact.downloadProgress.resuming
+        artifact.downloadProgress.canceling = source_artifact.downloadProgress.canceling
 
   def _calculate_eta(self, filename: str, progress: float) -> int:
     if filename not in self._download_start_times or progress <= 0:
@@ -214,14 +255,20 @@ class ModelManagerSP:
 
     total, ranged = await loop.run_in_executor(None, _probe_size, url)
     pieces: list[tuple[int, int | None]] = list(_piece_ranges(total, PIECE_SIZE)) if ranged else [(0, None)]
-    await loop.run_in_executor(None, _prepare_target, path, total)
-    progress = _Progress()
+    layout = {"total": total, "piece_size": PIECE_SIZE, "ranged": ranged, "sha256": artifact.downloadUri.sha256.lower()}
+    done = await loop.run_in_executor(None, _prepare_target, path, layout, len(pieces))
+    done_bytes = sum(end - start for i, (start, end) in enumerate(pieces) if i in done and end is not None)
+    progress = _Progress(path, layout, done, done_bytes)
+    if done:
+      artifact.downloadProgress.resuming = True
+      self._publish_progress(artifact, done_bytes, total, 0)
+      artifact.downloadProgress.resuming = False
     cancel = threading.Event()
     started = progress.snapshot(), time.monotonic()  # before any worker can land bytes
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PIECES) as pool:
       tasks = [loop.run_in_executor(pool, _fetch_piece, url, path, i, start, end, progress, cancel, self._block_size)
-               for i, (start, end) in enumerate(pieces)]
+               for i, (start, end) in enumerate(pieces) if i not in done]
       try:
         await self._report_until_done(tasks, artifact, progress, total, started)
       except BaseException as e:
@@ -235,6 +282,24 @@ class ModelManagerSP:
         raise
     del self._download_start_times[artifact.fileName]
 
+  async def _download_with_retries(self, url: str, path: str, artifact) -> None:
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+      if self._download_interrupted():
+        raise DownloadCancelled("Download cancelled")
+      try:
+        await self._download_file(url, path, artifact)
+        return
+      except requests.RequestException as e:
+        if not _is_transient(e) or attempt == DOWNLOAD_ATTEMPTS - 1:
+          raise
+        progress = artifact.downloadProgress
+        self._set_progress(artifact, progress.status, progress.progress, progress.eta, 0)
+        deadline = time.monotonic() + DOWNLOAD_BACKOFF * 2 ** attempt
+        while (remaining := deadline - time.monotonic()) > 0:
+          if self._download_interrupted():
+            raise DownloadCancelled("Download cancelled") from e
+          await asyncio.sleep(min(remaining, 0.25))
+
   async def _process_artifact(self, artifact, destination_path: str) -> None:
     if not artifact.downloadUri.uri:
       return None
@@ -245,8 +310,15 @@ class ModelManagerSP:
     expected_hash = artifact.downloadUri.sha256
     filename = artifact.fileName
     full_path = os.path.join(destination_path, filename)
+    temporary = f"{full_path}.partial"
+    resume_state = Path(f"{temporary}.json")
+    destination = Path(destination_path).resolve()  # noqa: ASYNC240
+    if any(not path.resolve().is_relative_to(destination) for path in (Path(full_path), Path(temporary), resume_state)):
+      raise ValueError("Model artifact path escapes destination")
+    Path(full_path).parent.mkdir(parents=True, exist_ok=True)
     status = custom.ModelManagerSP.DownloadStatus
     artifact.downloadProgress.canceling = False
+    artifact.downloadProgress.resuming = False
 
     try:
       self._set_progress(artifact, status.verifying, 0)
@@ -255,37 +327,27 @@ class ModelManagerSP:
         return
 
       self._set_progress(artifact, status.downloading, 0)
-      await self._download_file(url, full_path, artifact)
+      await self._download_with_retries(url, temporary, artifact)
       self._set_progress(artifact, status.verifying, 99)
-      if not await verify_file(full_path, expected_hash):
+      valid = await verify_file(temporary, expected_hash)
+      resume_state.unlink(missing_ok=True)  # noqa: ASYNC240
+      if not valid:
+        os.remove(temporary)
         raise ValueError(f"Hash validation failed for {filename}")
+      os.replace(temporary, full_path)
 
       self._set_progress(artifact, status.downloaded, 100)
 
     except DownloadCancelled:
-      self._download_start_times.pop(artifact.fileName, None)
-      artifact.downloadProgress.status = status.failed
-      artifact.downloadProgress.eta = 0
-      artifact.downloadProgress.speed = 0
-      self._sync_artifact_progress(artifact)
+      self._set_progress(artifact, status.downloading, artifact.downloadProgress.progress)
+      raise
+    except Exception:
       if self.selected_bundle:
         self.selected_bundle.status = status.failed
-      self._report_status()
+      self._set_progress(artifact, status.failed, artifact.downloadProgress.progress)
       raise
-
-    except Exception as e:
-      cloudlog.error(f"Error downloading {filename}: {str(e)}")
-      if os.path.isfile(full_path):  # noqa: ASYNC240
-        os.remove(full_path)
-      artifact.downloadProgress.status = status.failed
-      artifact.downloadProgress.eta = 0
-      artifact.downloadProgress.speed = 0
-      self._sync_artifact_progress(artifact)
-      if self.selected_bundle:
-        self.selected_bundle.status = status.failed
-      self._report_status()
+    finally:
       self._download_start_times.pop(artifact.fileName, None)
-      raise
 
   async def _process_model(self, model, destination_path: str) -> None:
     """Processes a single model download including verification"""
@@ -333,6 +395,8 @@ class ModelManagerSP:
       self.params.put(ACTIVE_BUNDLE_KEYS[source], model_bundle.to_dict(), block=True)
       self.active_bundle = get_active_bundle(self.params, chestnut=self.chestnut_present)
 
+    except DownloadCancelled:
+      raise
     except Exception:
       if self.selected_bundle is not None:
         self.selected_bundle.status = custom.ModelManagerSP.DownloadStatus.failed
@@ -360,11 +424,14 @@ class ModelManagerSP:
       self._download_ref = ref_to_download
       try:
         self.download(model_to_download, Paths.model_root(), source)
+      except DownloadCancelled:
+        self.selected_bundle = None
       except Exception as e:
         cloudlog.exception(e)
+      else:
+        self.selected_bundle = None
       finally:
         self._release_download_ref()
-        self.selected_bundle = None
 
   def main_thread(self) -> None:
     """Main thread for model management"""

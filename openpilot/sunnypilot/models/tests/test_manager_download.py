@@ -348,6 +348,42 @@ class TestProcessArtifact(ManagerDownloadTestBase):
     assert not os.path.isfile(self.path)
     assert self.artifact.downloadProgress.status == custom.ModelManagerSP.DownloadStatus.failed
 
+  def test_failed_transfer_resumes_without_replacing_the_previous_file(self):
+    with open(self.path, 'wb') as f:
+      f.write(b'previous model')
+    self.enterContext(mock.patch.object(manager_module, 'MAX_CONCURRENT_PIECES', 1))
+    self.enterContext(mock.patch.object(manager_module, 'PIECE_ATTEMPTS', 1))
+    self.enterContext(mock.patch.object(manager_module, 'DOWNLOAD_BACKOFF', 0.01, create=True))
+    self.server.fail_ranges = {piece_range(2): 503}
+
+    with self.assertRaises(requests.HTTPError):
+      self.process_artifact()
+    assert self.read_path() == b'previous model'
+    assert self.piece_requests().count(piece_range(2)) == 4
+    assert self.piece_requests().count(piece_range(0)) == 1
+
+    # The next selection has no in-memory progress from the previous one.
+    self.server.fail_ranges.clear()
+    self.process_artifact()
+    assert self.read_path() == WHOLE_BODY
+    assert self.piece_requests().count(piece_range(0)) == 1
+    assert self.artifact.downloadProgress.status == custom.ModelManagerSP.DownloadStatus.downloaded
+    assert os.listdir(self.dest) == [FILE_NAME]
+
+  def test_failed_request_keeps_the_selected_bundle_visible(self):
+    self.make_artifact()
+    self._bundle.ref = 'failed-model'
+    self.manager.source_models = {'qcom': [self._bundle]}
+    self.params.get.return_value = 'failed-model'
+    self.server.fail_ranges = {(0, 0): 404}
+    with mock.patch.object(manager_module.Paths, 'model_root', return_value=self.dest):
+      self.manager._process_download_requests()
+
+    assert self.manager.selected_bundle.ref == 'failed-model'
+    assert self.manager.selected_bundle.status == custom.ModelManagerSP.DownloadStatus.failed
+    assert self.server.request_ranges == [(0, 0)]
+    self.params.put.assert_not_called()
+
   def test_probe_failure_moves_past_verifying(self):
     self.server.fail_ranges = {(0, 0): 404}  # the size probe
     with self.assertRaises(requests.exceptions.HTTPError):
