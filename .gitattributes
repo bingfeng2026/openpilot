@@ -17,3 +17,6 @@ openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
 
 # Keep the fork-only Chinese glyph subset available without a second LFS store.
 openpilot/selfdrive/assets/fonts/NotoSansCJKsc-Regular.otf -filter -diff -merge -text
+openpilot/selfdrive/assets/fonts/NotoSansCJKjp-Regular.otf -filter -diff -merge -text
+openpilot/selfdrive/assets/fonts/NotoSansCJKkr-Regular.otf -filter -diff -merge -text
+openpilot/selfdrive/assets/fonts/NotoSansCJKtc-Regular.otf -filter -diff -merge -text

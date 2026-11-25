@@ -281,7 +281,7 @@ msgid "Clear Model Cache"
 msgstr "清除模型缓存"
 
 msgid "Click \"add new device\" and scan the QR code on the right"
-msgstr "点击“添加新设备”，扫描右侧二维码"
+msgstr "点按“添加新设备”并扫描右侧二维码"
 
 msgid "Click the Sponsor button for more details"
 msgstr "点击 Sponsor 按钮了解更多"
@@ -401,7 +401,7 @@ msgid "Device must be registered with the comma.ai backend to pair."
 msgstr "设备需注册到 comma.ai 后端才能配对。"
 
 msgid "Device will automatically shutdown after set time once the engine is turned off.\n(30h is the default)"
-msgstr "发动机关闭后，设备将在设定时间后自动关机。\n（默认 30 小时）"
+msgstr "熄火后，设备将在设定时间后自动关机。\n（默认 30 小时）"
 
 msgid "Disable"
 msgstr "禁用"
@@ -524,10 +524,10 @@ msgid "Enable"
 msgstr "启用"
 
 msgid "Enable \"Always Offroad\" in Device panel, or turn vehicle off to change."
-msgstr "在「设备」面板启用「始终非行驶」，或关闭车辆后再更改。"
+msgstr "请在“设备”面板开启“始终离路”，或熄火后再修改。"
 
 msgid "Enable \"Always Offroad\" in Device panel, or turn vehicle off to toggle."
-msgstr "在「设备」面板启用「始终非行驶」，或关闭车辆后再切换。"
+msgstr "请在“设备”面板开启“始终离路”，或熄火后再切换。"
 
 msgid "Enable ADB"
 msgstr "启用 ADB"
@@ -689,7 +689,7 @@ msgid "Forget"
 msgstr "忘记"
 
 msgid "Forget Wi-Fi Network \"{}\"?"
-msgstr "要忘记 Wi‑Fi 网络“{}”吗？"
+msgstr "要忘记 Wi-Fi 网络“{}”吗？"
 
 msgid "Frequently Asked Questions"
 msgstr "常见问题"
@@ -1067,7 +1067,7 @@ msgid "Please connect to Wi-Fi to update."
 msgstr "请连接 Wi-Fi 再进行更新。"
 
 msgid "Please enable \"Always Offroad\" mode or turn off the vehicle to adjust these toggles."
-msgstr "请开启「始终非行驶」模式或关闭车辆后再调整这些开关。"
+msgstr "请开启“始终离路”模式或熄火后再调整这些开关。"
 
 msgid "Please reboot and try again."
 msgstr "请重启后重试。"
@@ -1118,7 +1118,7 @@ msgid "REVIEW"
 msgstr "查看"
 
 msgid "Re-enter the \"sunnylink\" panel to verify sponsorship status"
-msgstr "重新进入「sunnylink」面板以确认赞助状态"
+msgstr "请重新进入“sunnylink”面板以验证赞助状态"
 
 msgid "Real-Time & Offline"
 msgstr "实时与离线"
@@ -2030,7 +2030,7 @@ msgid "（近似）"
 msgstr "（近似）"
 
 msgid "🔥 Firehose Mode 🔥"
-msgstr "🔥 Firehose 模式 🔥"
+msgstr "Firehose 模式"
 
 msgid "{} ALERT"
 msgid_plural "{} ALERTS"
