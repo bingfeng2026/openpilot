@@ -149,12 +149,12 @@ class DeveloperUiRenderer(Widget):
     if not elements:
       return
 
-    # single row, largest font that still fits all groups
+    # single row at the requested 55 px (shrinks only if the content would overflow)
     margin = 12
     min_gap = 8
     n = len(elements)
     available = rect.width - 2 * margin - (n + 1) * min_gap
-    font_size = 96
+    font_size = 55
     widths = []
     while font_size > 16:
       widths = []
